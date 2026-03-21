@@ -470,7 +470,6 @@ class StreamableModel(pl.LightningModule):
         lr: float = 1e-4,
         b1: float = 0.5,
         b2: float = 0.9,
-        dataset: str = 'librispeech'
     ) -> None:
         # https://arxiv.org/pdf/2009.02095.pdf
         # 2. Method
@@ -597,54 +596,6 @@ class StreamableModel(pl.LightningModule):
 
         num_replaced = self.quantizer.replace_vectors()
         self.log("num_replaced", float(num_replaced), prog_bar=True)
-
-    def train_dataloader(self):
-        return self._make_dataloader(True)
-
-    def _make_dataloader(self, train: bool):
-        import torchaudio
-
-        def collate(examples):
-            return torch.stack(examples)
-
-        class VoiceDataset(torch.utils.data.Dataset):
-            def __init__(self, dataset, sample_rate, segment_length):
-                self._dataset = dataset
-                self._sample_rate = sample_rate
-                self._segment_length = segment_length
-
-            def __getitem__(self, index):
-                import random
-                x, sample_rate, *_ = self._dataset[index]
-                x = torchaudio.functional.resample(x, sample_rate, self._sample_rate)
-                assert x.shape[0] == 1
-                x = torch.squeeze(x)
-                x *= 0.95 / torch.max(x)
-                assert x.dim() == 1
-                if x.shape[0] < self._segment_length:
-                    x = F.pad(x, [0, self._segment_length - x.shape[0]], "constant")
-                pos = random.randint(0, x.shape[0] - self._segment_length)
-                x = x[pos:pos + self._segment_length]
-                return x
-
-            def __len__(self):
-                return len(self._dataset)
-
-        if self.hparams.dataset == 'yesno':
-            ds = torchaudio.datasets.YESNO("./data", download=True)
-        elif self.hparams.dataset == 'librispeech-dev':
-            ds = torchaudio.datasets.LIBRISPEECH("./data", url="dev-clean")
-        elif self.hparams.dataset == 'librispeech':
-            url = "train-clean-100" if train else "dev-clean"
-            ds = torchaudio.datasets.LIBRISPEECH("./data", url=url)
-        else:
-            raise ValueError()
-        ds = VoiceDataset(ds, self.hparams.sample_rate, self.hparams.segment_length)
-
-        loader = torch.utils.data.DataLoader(
-            ds, batch_size=self.hparams['batch_size'], shuffle=True,
-            collate_fn=collate)
-        return loader
 
 
 class KMeanCodebookInitCallback(pl.Callback):

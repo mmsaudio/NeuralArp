@@ -5,7 +5,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch.nn.functional as F
 import random
+    import pytorch_lightning as pl
+
 torchaudio.set_audio_backend("soundfile")
+
+class GuitaDataModule(pl.LightningDataModule):
+    def __init__(self, dataset, batch_size):
+        super().__init__()
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+    def train_dataloader(self):
+        return DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
 
 class GuitarDataset(torch.utils.data.Dataset):
     def __init__(self, 

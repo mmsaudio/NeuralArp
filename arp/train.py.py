@@ -1,17 +1,19 @@
-from dataset import GuitarDataset
+from arp.dataset import GuitarDataset
 
-wav_file = "/mnt/c/Users/remi/Desktop/guitare2.wav"
 
-dataset = GuitarDataset(
-    wav_files=wav_file,
-    segment_length=4410,
-    note_length=44410,
+
+def train():
+    wav_file = "/mnt/c/Users/remi/Desktop/guitare2.wav"
+
+    dataset = GuitarDataset(
+        wav_files=wav_file,
+        segment_length=4410,
+        note_length=44410,
     )
 
-    def train():
     model = StreamableModel(
         batch_size=32,
-        sample_rate=16_000,
+        sample_rate=dataset.fs,
         segment_length=32270,
         padding='same',
         dataset='librispeech')
