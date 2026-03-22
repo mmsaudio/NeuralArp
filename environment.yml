@@ -8,6 +8,7 @@ dependencies:
   - pip
   - numpy
   - scipy
+  - pandas
   - matplotlib
   - ipython
   - ffmpeg

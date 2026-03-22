@@ -16,7 +16,10 @@ except ImportError:
             pass
 from itertools import chain
 import random
-
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import torchaudio
 
 class ResNet1d(nn.Module):
     def __init__(
@@ -425,7 +428,6 @@ class ReconstructionLoss2(nn.Module):
     """
     def __init__(self, sample_rate, eps=1e-5):
         super().__init__()
-        import torchaudio
         self.layers = nn.ModuleList()
         self.alpha = []
         self.eps = eps
@@ -503,6 +505,8 @@ class StreamableModel(pl.LightningModule):
         self.lr = lr
         self.b1 = b1
         self.b2 = b2
+
+        self.val_outputs = []
 
     def configure_optimizers(self):
         lr = self.lr
@@ -619,6 +623,73 @@ class StreamableModel(pl.LightningModule):
         num_replaced = self.quantizer.replace_vectors()
         self.log("num_replaced", float(num_replaced), prog_bar=True)
 
+    def validation_step(self, batch, batch_idx):
+        input = batch[:, None, :]  # [B, 1, T]
+
+        # Forward pass (generator only)
+        output, _, q_loss = self.forward(input)
+
+        # --- Generator losses to monitor ---
+
+        # STFT discriminator
+        stft_out = self.stft_discriminator(output)
+        g_stft_loss = torch.mean(torch.relu(1 - stft_out))
+
+        # Wave discriminator feature & adversarial losses
+        g_wave_loss = 0
+        g_feat_loss = 0
+        for i in range(3):
+            feats_real = self.wave_discriminators[i](input)
+            feats_fake = self.wave_discriminators[i](output)
+            g_wave_loss += torch.mean(torch.relu(1 - feats_fake[-1]))
+            g_feat_loss += sum(torch.mean(torch.abs(f1 - f2))
+                            for f1, f2 in zip(feats_real[:-1], feats_fake[:-1])) / (len(feats_real) - 1)
+
+        g_wave_loss /= 3
+        g_feat_loss /= 3
+
+        # Reconstruction loss
+        g_rec_loss = self.rec_loss(output[:, 0, :], input[:, 0, :])
+
+        # Aggregate generator loss (for monitoring only, no backward)
+        g_adv_loss = (g_stft_loss + g_wave_loss) / 4
+        g_loss = g_adv_loss + 100 * g_feat_loss + g_rec_loss
+
+        # Log metrics
+        self.log("val_g_loss", g_loss, prog_bar=True)
+        self.log("val_g_rec_loss", g_rec_loss)
+        self.log("val_g_feat_loss", g_feat_loss)
+        self.log("val_g_adv_loss", g_adv_loss)
+        self.log("val_g_stft_loss", g_stft_loss)
+        self.log("val_g_wave_loss", g_wave_loss)
+        self.log("val_q_loss", q_loss)
+
+        self.val_outputs.append(output)
+
+        # Optionally return outputs for audio saving / visualization
+        return output
+
+    def on_validation_epoch_end(self):
+        N = 5  # every N validation epochs
+        if (self.current_epoch + 1) % N == 0:  # +1 if you want 1-based counting
+            log_dir = self.logger.log_dir
+            csv_path = f"{log_dir}/metrics.csv"
+            png_path = f"{log_dir}/metrics.png"
+            if os.path.exists(csv_path):
+                csv_to_png(csv_path, png_path)
+
+
+            wav_path = f"{log_dir}/rec.wav"
+            wavgt_path = f"{log_dir}/gt.wav"
+
+            concatenated = torch.cat(self.val_outputs, dim=0)  # [num_notes, T]
+            concatenated = concatenated.flatten().to(torch.float32).cpu()  # [num_notes * T]
+            torchaudio.save(wav_path, concatenated.unsqueeze(0), sample_rate=self.trainer.datamodule.fs)
+            
+            gt = self.trainer.datamodule.val_dataset.notes.flatten().to(torch.float32).cpu()
+            torchaudio.save(wavgt_path, gt.unsqueeze(0), sample_rate=self.trainer.datamodule.fs)
+            print(f"Saved full validation audio to {wav_path}")
+            self.val_outputs.clear()
 
 class KMeanCodebookInitCallback(pl.Callback):
     def on_fit_start(self, trainer, model):
@@ -640,3 +711,43 @@ class KMeanCodebookInitCallback(pl.Callback):
 
 
 
+
+def csv_to_png(csv_path, output_file):
+    df = pd.read_csv(csv_path)
+
+    # --- Metrics to plot ---
+    # Train and validation metrics we want to monitor
+    metrics = ["g_loss", "g_rec_loss", "g_feat_loss", "q_loss", "g_stft_loss", "g_wave_loss"]
+
+    # --- Create subplots ---
+    n_metrics = len(metrics)
+    fig, axes = plt.subplots(n_metrics, 1, figsize=(12, 3 * n_metrics), sharex=True)
+
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        
+        # Plot training metric if available
+        if metric in df.columns:
+            y = df[metric].dropna()
+            x = df["epoch"][y.index]
+            ax.plot(x,y, label=f"train_{metric}")
+        
+        # Plot corresponding validation metric if available
+        val_metric = f"val_{metric}"
+        if val_metric in df.columns:
+            y = df[val_metric].dropna()
+            x = df["epoch"][y.index]
+            ax.plot(x,y, linestyle='--', label=f"val_{metric}")
+        
+        ax.set_ylabel(metric)
+        ax.grid(True)
+        ax.legend(loc="upper right")
+
+    # Common xlabel
+    axes[-1].set_xlabel("Epoch")
+    fig.suptitle("Training and Validation Losses / Metrics", fontsize=16)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])  # leave space for suptitle
+
+    # --- Save figure ---
+    fig.savefig(output_file)
+    print(f"Saved figure to {output_file}")

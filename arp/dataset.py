@@ -10,11 +10,47 @@ import pytorch_lightning as pl
 torchaudio.set_audio_backend("soundfile")
 
 class GuitaDataModule(pl.LightningDataModule):
-    def __init__(self, train_dataset, val_dataset=None, batch_size=4):
+    def __init__(
+                self, 
+                wav_files, 
+                note_length,
+                segment_length,
+                threshold_on_factor=1e-2,
+                threshold_off_factor=1e-4,
+                display=False,
+                batch_size=4,
+                train_val_ratio=0.95,
+            ):
         super().__init__()
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
+
+        if isinstance(wav_files, str):
+            wav_files = [wav_files]
+
+        notes = []
+        for f in wav_files:
+            _notes, fs = wav_to_notes(
+                f, 
+                n_samples=note_length,
+                threshold_on_factor=threshold_on_factor, 
+                threshold_off_factor=threshold_off_factor, 
+                display=display
+            )
+            notes.append(_notes)
+
+        notes = torch.cat(notes, dim=0)
+
+        self.notes = notes
+        self.fs = fs
         self.batch_size = batch_size
+        n_train = int(len(notes) * train_val_ratio)
+
+        self.train_dataset = GuitarDataset(self.notes[:n_train], segment_length)
+        self.val_dataset = GuitarDataset(self.notes[n_train:], segment_length)
+
+        print("Total notes = %i"%len(notes))
+        print("Train notes = %i"%len(self.notes[:n_train]))
+        print("Val notes = %i"%len(self.notes[n_train:]))
+
 
     def _make_dataloader(self, dataset, train=True):
         return torch.utils.data.DataLoader(
@@ -33,32 +69,10 @@ class GuitaDataModule(pl.LightningDataModule):
 
 class GuitarDataset(torch.utils.data.Dataset):
     def __init__(self, 
-        wav_files, 
+        notes, 
         segment_length,
-        note_length,
-        threshold_on_factor=1e-2,
-        threshold_off_factor=1e-4,
-        display=False
     ):
-        if isinstance(wav_files, str):
-            wav_files = [wav_files]
-
-        notes = []
-        for f in wav_files:
-            _notes, fs = wav_to_notes(
-                f, 
-                n_samples=note_length,
-                threshold_on_factor=threshold_on_factor, 
-                threshold_off_factor=threshold_off_factor, 
-                display=display
-            )
-            notes.append(_notes)
-
-        notes = torch.cat(notes, dim=0)
-        print("Total notes = %i"%len(notes))
-
         self.notes = notes
-        self.fs = fs
         self._segment_length = segment_length
 
     def __getitem__(self, index):
