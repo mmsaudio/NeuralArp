@@ -340,7 +340,10 @@ class WaveDiscriminator(nn.Module):
             x = layer(x)
             feats.append(x)
             x = self.activation(x)
-        feats.append(self.layers[-1](x))
+
+        x = self.layers[-1](x)
+        x = torch.clamp(x, -10.0, 10.0)
+        feats.append(x)
         return feats
 
 
@@ -375,8 +378,15 @@ class STFTDiscriminator(nn.Module):
         x = torch.squeeze(input, 1).to(torch.float32)  # torch.stft() doesn't accept float16
         x = torch.stft(x, self.n_fft, self.hop_length, normalized=True, onesided=True, return_complex=True)
         x = torch.abs(x)
+
+        # x = torch.log1p(x)
+        # x = x / (torch.mean(x, dim=(-2, -1), keepdim=True) + 1e-6)
+
         x = torch.unsqueeze(x, dim=1)
         x = self.layers(x)
+
+        x = torch.clamp(x, -10.0, 10.0)   #REMI
+
         return x
 
 
@@ -464,9 +474,6 @@ class StreamableModel(pl.LightningModule):
         num_quantizers: int = 8,
         num_embeddings: int = 1024,
         padding: str = "valid",
-        batch_size: int = 32,
-        sample_rate: int = 24_000,
-        segment_length: int = 32270,
         lr: float = 1e-4,
         b1: float = 0.5,
         b2: float = 0.9,
@@ -476,7 +483,7 @@ class StreamableModel(pl.LightningModule):
         # SEANet uses Adam with lr=1e-4, beta1=0.5, beta2=0.9
         # batch_size=16
         super().__init__()
-        self.save_hyperparameters()
+        # self.save_hyperparameters()
         self.automatic_optimization = False
         self.encoder = Encoder(n_channels, padding)
         self.decoder = Decoder(n_channels, padding)
@@ -493,10 +500,14 @@ class StreamableModel(pl.LightningModule):
         self.stft_discriminator = STFTDiscriminator()
         self.register_load_state_dict_pre_hook(_migrate_state_dict)
 
+        self.lr = lr
+        self.b1 = b1
+        self.b2 = b2
+
     def configure_optimizers(self):
-        lr = self.hparams.lr
-        b1 = self.hparams.b1
-        b2 = self.hparams.b2
+        lr = self.lr
+        b1 = self.b1
+        b2 = self.b2
 
         optimizer_g = torch.optim.Adam(
             chain(
@@ -558,6 +569,10 @@ class StreamableModel(pl.LightningModule):
         self.log("g_loss", g_loss, prog_bar=True)
 
         self.manual_backward(g_loss + q_loss)
+        torch.nn.utils.clip_grad_norm_(
+            chain(self.encoder.parameters(), self.decoder.parameters()), 
+            max_norm=1.0
+        )
         optimizer_g.step()
         optimizer_g.zero_grad()
         self.untoggle_optimizer(optimizer_g)
@@ -590,6 +605,13 @@ class StreamableModel(pl.LightningModule):
         self.log("d_loss", d_loss, prog_bar=True)
 
         self.manual_backward(d_loss)
+        torch.nn.utils.clip_grad_norm_(
+            chain(
+                self.wave_discriminators.parameters(),
+                self.stft_discriminator.parameters()
+            ),
+            max_norm=1.0
+        )
         optimizer_d.step()
         optimizer_d.zero_grad()
         self.untoggle_optimizer(optimizer_d)
@@ -605,8 +627,10 @@ class KMeanCodebookInitCallback(pl.Callback):
         # run the k-means
         # algorithm on the first training batch and use the learned
         # centroids as initialization
-        batch = next(iter(model.train_dataloader()))
+        batch = next(iter(trainer.datamodule.train_dataloader()))
         input = batch[:, None, :].to(model.device)
+
+        print(input.shape)
         with torch.no_grad():
             x = torch.flatten(model.encoder(input))
             mean = torch.mean(x, dim=0)

@@ -5,18 +5,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch.nn.functional as F
 import random
-    import pytorch_lightning as pl
+import pytorch_lightning as pl
 
 torchaudio.set_audio_backend("soundfile")
 
 class GuitaDataModule(pl.LightningDataModule):
-    def __init__(self, dataset, batch_size):
+    def __init__(self, train_dataset, val_dataset=None, batch_size=4):
         super().__init__()
-        self.dataset = dataset
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
         self.batch_size = batch_size
 
+    def _make_dataloader(self, dataset, train=True):
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=train
+        )
+
     def train_dataloader(self):
-        return DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
+        return self._make_dataloader(self.train_dataset, train=True)
+
+    def val_dataloader(self):
+        if self.val_dataset is None:
+            return None
+        return self._make_dataloader(self.val_dataset, train=False)
 
 class GuitarDataset(torch.utils.data.Dataset):
     def __init__(self, 
@@ -50,7 +63,7 @@ class GuitarDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         x = self.notes[index]
-        x *= 0.95 / torch.max(x)
+        x = x / (torch.max(torch.abs(x)) + 1e-6)
         assert x.dim() == 1
         if x.shape[0] < self._segment_length:
             x = F.pad(x, [0, self._segment_length - x.shape[0]], "constant")
@@ -117,5 +130,9 @@ def wav_to_notes(wav_file, n_samples=44100, threshold_on_factor = 0.1, threshold
         fig.show()
 
     print("Extracted %i notes from wave file %s "%(len(notes), wav_file))
+
+    has_nan = torch.isnan(notes).any()
+    if has_nan:
+        raise
 
     return notes, fs
