@@ -14,5 +14,5 @@ dependencies:
   - pysoundfile
   - pytorch
   - torchaudio
-  - cpuonly  
+  #- cpuonly
   - pytorch-lightning
